@@ -1,0 +1,462 @@
+use strict;use warnings;
+
+package Agp_rep_add;
+
+#huangguodong@genomics.cn  2014-09-03
+
+#insert the unused scaffolds into the AGP.
+#check the ovl repeat in the AGP and decide the redundant BACs. 
+#some BAC was not in ovl assembly but we can only check in last to add them or not. 
+#must check by the sort
+
+sub good{
+	my ($self,$agp,$used,$scf_len,$rel_ctg,$ctg,$bacTolen,$bacSort)=@_;
+
+	#firstly check the ovl repeat and see if we can check for the redundant BACs
+	#find out repeat
+	my $sort=1;
+	open IN,$agp or die;
+	my %block;my %sort;my %psort;my $psort=1;
+	my %same;my %bacSort_sort;
+	#use the Ns ns to seperate the out.if the repeat is neibor then discard the later one. but if the line of block is not equal then we may meet redundant BAC.
+	while(<IN>){
+		if(/\sn\s/){
+			#meet un-overlap BAC
+			$sort++;
+			next;
+		}
+		if(/bac/){
+			chomp;
+			my @aa=split;
+			push @{$block{$sort}},$_;
+			my $scf=$aa[5];#$scf=~s/_\d+$//;
+			$used->{$scf}=1;
+			unless($sort{$scf}){$sort{$scf}=$sort;}
+			$psort{$psort}=$scf;$psort++;
+			$same{$sort}.="$scf|";
+			$scf=~s/_\d+$//;
+			push @{$bacSort_sort{$sort}},$bacSort->{$scf};
+		}
+		if(/scaffold/){$sort++;}
+	}
+	close IN;
+	#find the same block;
+	my %same1;
+	foreach my $sot(keys %same){
+		push @{$same1{$same{$sot}}},$sot;
+	}
+	my %del_sort;
+	foreach my $scff(keys %same1){
+		if(@{$same1{$scff}}>1){
+			my @aa=sort {$a<=>$b} @{$same1{$scff}};
+			my @scaf=split /\|/,$scff;
+			my @scaf2=grep /bac/,@scaf;
+			if(@scaf2==1){
+				$same1{$scff}=[$aa[0]];
+			}else{
+				my $bac1=$scaf2[0];my $bac2=$scaf2[1];
+				$bac1=~s/_\d+$//;$bac2=~s/_\d+$//;
+				my $sort1=$bacSort->{$bac1};my $sort2=$bacSort->{$bac2};
+				my $have=1;
+				foreach my $check_sort($aa[0]..$aa[1]){
+					foreach my $srt(@{$bacSort_sort{$check_sort}}){
+						if($srt<$sort2){
+							$same1{$scff}=[$aa[-1]];$have=0;last;
+						}
+					}
+					unless($have){last;}
+				}
+				if($have){$same1{$scff}=[$aa[0]];}
+			}
+			print "$scff\tdup clock\n";
+			foreach(@aa){
+				if($same1{$scff}[0] == $_){next;}
+				$del_sort{$_}=1;
+			}
+		}
+	}
+	my @t_key=keys %same1;
+	foreach my $scff(keys %same1){
+		my $scff_id=$scff;$scff_id=~s/\|/\\\|/g;
+		my @tmp_key=grep /$scff_id/,@t_key;
+		if(@tmp_key>1){
+			my $tmp_out=join "\t",@tmp_key;
+			print "$scff\tdup clock\t$tmp_out\n";
+			$del_sort{$same1{$scff}[0]}=1;
+			undef $same1{$scff};delete $same1{$scff};
+		}
+	}
+	#calculate the BAC_scaffold frequence
+	my %count;
+	foreach my $sf(keys %same1){
+		my @scaf=split /\|/,$sf;
+		foreach my $key(@scaf){
+			$count{$key}++;
+		}
+	}
+	#if the frequence is larger than 1, than the scaffold must be redundent scaffold.
+	#as the calculation of the neibor BAC. the agp will not find out any redundent BAC anyway.
+	my %cross_link;
+	foreach my $scf(keys %count){
+		if($count{$scf}>1){
+			print "meet $scf between redundent BACs\tcheck cases 1(single) and 2(self link)\n";
+			#there are three cases need to be considered
+			#1. single BAC scaffold repeat which was output by whole record
+			#2. self link in one sort which one BAC scaffold link two neibor BAC scaffold in st and ed
+			#3. the real redundent BACs. deal if meet in later by hand.
+			# case 1
+			my @key_same1=keys %same1;
+			my @sel=grep /$scf\|/,@key_same1;
+			my @select;
+			foreach my $tar(@sel){
+				if($tar eq "$scf|"){
+					#actually in case 1
+					$del_sort{$same1{$tar}[0]}=1;
+				}else{
+					push @select,$tar;
+				}
+			}
+			@select=sort {$same1{$a}[0]<=>$same1{$b}[0]} @select;
+			if(@select>=2){
+				#check case 2
+				#my @key_same1=keys %same1;
+				#my @select=grep /$scf\|/,@key_same1;
+				print "$select[0]\t$select[1]\n";
+				if(@select>2){print "larger than 2. very complex situation.hand check please\n";next;}
+				my %not_scf;
+				foreach my $scf_name(@select){
+					my @aa=split /\|/,$scf_name;
+					foreach(@aa){
+						if($_ ne $scf){
+							my $t_id=$_;my $t_id_s=$t_id;$t_id_s=~s/_\d+$//;
+							$not_scf{$t_id}=$t_id_s;
+						}
+					}
+				}
+				my @not=keys %not_scf;
+				if($not_scf{$not[0]} eq $not_scf{$not[1]}){
+					#case 2 self link. change the block information. but juse need to check the $scf 
+					if($block{$same1{$select[0]}[0]}){;}
+					else{print "no data for $same1{$select[0]}[0]\n";next;}
+					if($block{$same1{$select[1]}[0]}){;}
+					else{print "no data for $same1{$select[1]}[0]\n";next;}
+					my @bb0=@{$block{$same1{$select[0]}[0]}};
+					my @bb1=@{$block{$same1{$select[1]}[0]}};
+					my @first;my @middle;my @last;
+					my $bb0;my $bb1;my $cal_sort=0;my $pp;
+					foreach my $re(@bb0){
+						my @aa=split /\s+/,$re;$cal_sort++;
+						if($aa[5] eq $scf){$bb0=$re;$pp=$cal_sort;}
+						else{@first=@aa;}
+					}
+					foreach my $re(@bb1){
+						my @aa=split /\s+/,$re;
+						if($aa[5] eq $scf){$bb1=$re;}
+						else{@last=@aa;}
+					}
+					#check the location of $scf
+					my @oo0=split /\s+/,$bb0;my @oo1=split /\s+/,$bb1;
+					if($oo0[-3] eq $oo1[-3]){
+						print "problem in cross_link\tcheck hand\t$scf\ndelet short one\n";
+						#delet the short overlap one
+						if($count{$first[5]}>1 or $count{$last[5]}>1){
+							print "ovl scaff  in case 3\n check hand\n";next;
+						}
+						my $left_fisrt=$first[2]-$first[1]+1;
+						my $left_last=$last[2]-$last[1]+1;
+						my $ovl_first=$scf_len->{$first[5]}-$left_fisrt;
+						my $ovl_last=$scf_len->{$last[5]}-$left_last;
+						if($ovl_first==0){
+							$ovl_first=$scf_len->{$scf}-($oo0[2]-$oo0[1]+1);
+						}
+						if($ovl_last==0){
+							$ovl_last=$scf_len->{$scf}-($oo1[2]-$oo1[1]+1);
+						}
+						my $keep_first=0;
+						if($ovl_first>$ovl_last){
+							$keep_first=1;
+						}
+						if($ovl_first == $ovl_last){
+							if($scf_len->{$first[5]} > $scf_len->{$last[5]}){
+								$keep_first=1;
+							}else{
+								$keep_first=0;
+							}
+							print "same ovl\tkeep longer scf\n";
+						}
+						#check if both is larger than 20kbp. if them keep the larger but not the overlap.
+						if($keep_first){
+							#keep first
+							@{$block{$same1{$select[1]}[0]}}=();delete $block{$same1{$select[1]}[0]};
+							$cross_link{$same1{$select[0]}[0]}=1;
+							print "$last[5] unused\n";
+						}else{
+							#keep last
+							@{$block{$same1{$select[0]}[0]}}=();delete $block{$same1{$select[0]}[0]};
+							$cross_link{$same1{$select[1]}[0]}=1;
+							print "$first[5] unused\n";
+						}
+						next;
+					}
+					my ($st1,$ed1,$st2,$ed2)=($oo0[6],$oo0[7],$oo1[6],$oo1[7]);
+					#if overlap then just keep the smaller st and larger ed
+					#else trip non-overlap length and merge the same BAC scaffold.discard $scf
+					my $check_ovl=check($st1,$ed1,$st2,$ed2);
+					if($check_ovl){
+						my $scf_st;my $scf_ed;
+						if($st1<$st2){$scf_st=$st2;}else{$scf_st=$st1;}
+						if($ed1<$ed2){$scf_ed=$ed1;}else{$scf_ed=$ed2;}
+						my $type_mid=$oo0[-1];
+						if($oo0[-3] ne $oo1[-3]){
+							if($pp==1){
+								$type_mid=$oo1[-3];$first[-3]=~tr/+-/-+/;
+							}
+							if($pp==2){
+								$type_mid=$oo0[-3];
+								$last[-3]=~tr/+-/-+/;
+							}
+						}
+						@middle=($oo0[0],$scf_st,$scf_ed,$oo0[3],$oo0[4],$oo0[5],$scf_st,$scf_ed,$type_mid,$oo0[-1]);
+
+					}else{
+						#trip last to make the coordinate properly and no middle
+						print "you need to check the coordinator again\n";
+						my $len1=$st2-$ed1+1;my $len2=$st1-$ed2+1;
+						my $len_trip;
+						if($len1>$len2){$len_trip=$len1;}else{$len_trip=$len2;}
+						my $first_st=$first[6];my $first_ed=$first[7];my $type1=$first[-3];
+						my $last_st=$last[6];my $last_ed=$last[7];my $type2=$last[-3];
+						if($pp==1){
+							if($type1 eq "+"){
+								# fisrt is st
+								$first_st=$first_st+$len_trip;
+							}else{
+								$first_ed=$first_ed-$len_trip;
+							}
+							$type1=~tr/+-/-+/;
+							$first[6]=$first_st;$first[7]=$first_ed;$first[-3]=$type1;
+							$first[1]+=$len_trip;
+						}
+						if($pp==2){
+							if($type2 eq "+"){
+								#last is ed
+								$last_ed-=$len_trip;
+							}else{
+								$last_st+=$len_trip;
+							}
+							$type2=~tr/+-/-+/;
+							$last[6]=$last_st;$last[7]=$last_ed;$last[-3]=$type2;
+							$last[1]+=$len_trip;
+						}
+					}
+					#update block and set maker
+					@{$block{$same1{$select[0]}[0]}}=();
+					@{$block{$same1{$select[1]}[0]}}=();delete $block{$same1{$select[1]}[0]};
+					my $out_first=join "\t",@first;
+					push @{$block{$same1{$select[0]}[0]}},$out_first;
+					if(@middle>5){
+						my $out_mid=join "\t",@middle;
+						push @{$block{$same1{$select[0]}[0]}},$out_mid;
+					}
+					my $out_last=join "\t",@last;
+					push @{$block{$same1{$select[0]}[0]}},$out_last;
+					$cross_link{$same1{$select[0]}[0]}=1;
+				}else{
+					#case 3
+					print "case 3\tdelete short\n";
+					my @bb0;my @bb1;
+					if($block{$same1{$select[0]}[0]}){@bb0=@{$block{$same1{$select[0]}[0]}};}
+					else{print "no data for $same1{$select[0]}[0]\n";next;}
+					if($block{$same1{$select[1]}[0]}){@bb1=@{$block{$same1{$select[1]}[0]}};}
+					else{print "no data for $same1{$select[1]}[0]\n";next;}
+					my @first;my @middle;my @last;
+					my $bb0;my $bb1;my $cal_sort=0;my $pp;
+					foreach my $re(@bb0){
+						my @aa=split /\s+/,$re;$cal_sort++;
+						if($aa[5] eq $scf){$bb0=$re;$pp=$cal_sort;}
+						else{@first=@aa;}
+					}
+					foreach my $re(@bb1){
+						my @aa=split /\s+/,$re;
+						if($aa[5] eq $scf){$bb1=$re;}
+						else{@last=@aa;}
+					}
+					my $len_first=$scf_len->{$first[5]};my $len_last=$scf_len->{$last[5]};
+					print "Difficult\t$first[5]\t$len_first\t$last[5]\t$len_last\n";
+					#if($len_first>$len_last){
+						#keep first
+					#	@{$block{$same1{$select[1]}[0]}}=();delete $block{$same1{$select[1]}[0]};
+					#	$cross_link{$same1{$select[0]}[0]}=1;
+					#	print "$last[5] unused\n";
+					#}else{
+						#keep last
+					#	@{$block{$same1{$select[0]}[0]}}=();delete $block{$same1{$select[0]}[0]};
+					#	$cross_link{$same1{$select[1]}[0]}=1;
+					#	print "$first[5] unused\n";
+					#}
+				}
+			}#new code
+			else{
+				print "only one or non in select\n";
+			}
+		}
+	}
+	#
+	#
+	#re-ouput the agp file
+	open OUT,">$agp.recheck" or die;
+	my $st=1;my $ed=1;my $b_sort_pre;
+	my $cal_num=0;my @key=keys %block;my $key_num=@key;
+	my $scf_nn=1;
+	foreach my $b_sort(sort {$a<=>$b} keys %block ){
+		unless($b_sort_pre){$b_sort_pre=$b_sort;}
+		print "$b_sort\t$b_sort_pre\n";
+		if($del_sort{$b_sort}){
+			print "$b_sort\tdup\tdel\n";
+			$b_sort_pre=$b_sort;
+			next;
+		}
+		$cal_num++;
+		#output block
+		my @b_aa=@{$block{$b_sort}};
+		my @tmp;my $seq_out;
+		foreach my $reco(@b_aa){
+			my @bb=split /\s+/,$reco;
+			my $len=$bb[2]-$bb[1]+1;
+			$ed=$st+$len-1;
+			$bb[1]=$st;$bb[2]=$ed;$bb[3]=$scf_nn;$scf_nn++;
+			my $out=join "\t",@bb;
+			#print OUT "$out\n";
+			$seq_out.="$out\n";
+			$st=$ed+1;
+			@tmp=@bb;
+		}
+		if($cal_num==1){
+			print OUT $seq_out;
+		}else{
+			if($cal_num<=$key_num){
+				if($b_sort-$b_sort_pre>1){
+					my $bef=$block{$b_sort_pre}[0];my $bef_scf=(split /\s+/,$bef)[5];$bef_scf=~s/_\d+$//;
+					my $aft=$block{$b_sort}[0];my $aft_scf=(split /\s+/,$aft)[5];$aft_scf=~s/_\d+$//;
+					my $bef_scf_sort=$bacSort->{$bef_scf};my $aft_scf_sort=$bacSort->{$aft_scf};
+					if($aft_scf_sort-$bef_scf_sort<2){
+						#output 100bp Ns
+						my $pre=$tmp[0];
+						$ed=$st+100-1;
+						my $out="$pre\t$st\t$ed\t$scf_nn\tN\t100\tscaffold\tno\tna\n";
+						print OUT "$out";
+						$st=$ed+1;$scf_nn++;
+					}else{
+						#output 30kbp Ns
+						my $pre=$tmp[0];
+						$ed=$st+30000-1;
+						my $out="$pre\t$st\t$ed\t$scf_nn\tN\t30000\tscaffold\tno\tna\n";
+						print OUT "$out";
+						$st=$ed+1;$scf_nn++;
+					}
+				}else{
+					#output 100bp Ns
+					my $pre=$tmp[0];
+					$ed=$st+100-1;
+					my $out="$pre\t$st\t$ed\t$scf_nn\tN\t100\tscaffold\tno\tna\n";
+					print OUT "$out";
+					$st=$ed+1;$scf_nn++;
+				}
+				print OUT $seq_out;
+			}else{
+				print "reach the end\n";
+			}
+		}
+		$b_sort_pre=$b_sort;
+	}
+	close OUT;
+	#re-calculated the gap size using the expect BAC length and the real BAC length
+	# we treat all scaffold on the agp was in the overlap region. firstly calculate all the agp scaffold length.
+	#if the scaffold length was larger than the expect BAC length then insert 100 Ns to represent the gap
+	#else insert the refered length Ns between the 1 and 2 marker
+	#we may re-input the agp.recheck and the BAC total length(hash $bacTolen).
+	open IN,"$agp.recheck" or die;
+	open OUT,">$agp.recheck.recalgap";
+	my %ex_len;my $row=1;my %all_re;my %check_123;
+	while(<IN>){
+		if(/bac/){
+			#calculate the exist BAC scaffold length
+			my @aa=split;
+			my $scf=$aa[5];my $id=$scf;$id=~s/_\d+$//;
+			$ex_len{$id}+=$scf_len->{$scf};
+			$check_123{$id}{$aa[-1]}=1;
+		}
+		chomp;
+		$all_re{$row}=$_;
+		$row++;
+	}
+	close IN;
+	#firstly find the gap between 2 and 1. then re-calculate the gap 
+	foreach my $row_sort(sort {$a<=>$b} keys %all_re){
+		my $record=$all_re{$row_sort};
+		if($record=~/scaffold/){
+			#meet gap. calculate before BAC scaffold and after BAC scaffold
+			my $before=$row_sort-1;my $after=$row_sort+1;
+			my @aa=split /\s+/,$all_re{$before};my @bb=split /\s+/,$all_re{$after};
+			my $ida=$aa[5];$ida=~s/_\d+$//;
+			my $idb=$bb[5];$idb=~s/_\d+$//;
+			if($ida eq $idb){
+				if(($aa[-1]==2 && $aa[-1]>$bb[-1]) or (!$check_123{$ida}{"2"} && $aa[-1]>$bb[-1])){
+					#gap need to re-check
+					my $in_len=$ex_len{$ida};
+					my $to_len=$bacTolen->{$ida};
+					my $bac_sort=$bacSort->{$ida};
+					my $ep_len=$rel_ctg->{$bac_sort}[2];
+					if($to_len>$ep_len){
+						#exists length larger than expect length. do no change.
+						next;
+					}else{
+						my $left=$ep_len-$in_len;
+						if($left<=100){
+							#do no change
+							next;
+						}else{
+							my @cc=split /\s+/,$record;
+							$cc[5]=$left;
+							my $resul=join "\t",@cc;
+							$all_re{$row_sort}=$resul;
+						}
+					}
+				}	
+			}
+		}
+	}
+	#update the coordinate
+	$st=1;$ed=1;
+	foreach my $row_sort(sort {$a<=>$b} keys %all_re){
+		my $record=$all_re{$row_sort};
+		my @record=split /\s+/,$record;
+		my $len=$record[2]-$record[1]+1;
+		if($record[4] eq "N"){$len=$record[5];}
+		$ed=$st+$len-1;
+		$record[2]=$ed;$record[1]=$st;
+		my $resul=join "\t",@record;
+		$all_re{$row_sort}=$resul;
+		print OUT $resul,"\n";
+		$st=$ed+1;
+	}
+	close OUT;
+}
+
+sub check{
+	my ($st1,$ed1,$st2,$ed2)=@_;
+	my %kk;
+	$kk{"1"}=$st1;$kk{"2"}=$ed1;
+	$kk{"3"}=$st2;$kk{"4"}=$ed2;
+	my @key=sort {$kk{$a}<=>$kk{$b}} keys %kk;
+	#foreach(@key){print "$kk{$_}\t";}print "\n";
+	my $key=join "",@key;
+	if($key=~/^12/ or $key=~/^34/ or $key=~/^43/ or $key=~/^21/){
+		return 0;
+	}else{
+		return 1;
+	}
+}
+
+
+1
